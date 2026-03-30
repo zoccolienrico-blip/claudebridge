@@ -1,132 +1,124 @@
-# ClaudeBridge
+# ClaudeBridge 🌉
 
-**Control Claude Code from your iPhone via Telegram.**
+Control Claude Code from your iPhone via Telegram.
 
-ClaudeBridge is a lightweight Node.js bot that bridges Telegram messages to the [Claude Code](https://claude.ai/code) CLI. Send a prompt from your phone, get the full Claude Code output back in your chat.
+ClaudeBridge is a Telegram bot that bridges your mobile device with Claude Code running on your Mac/PC. Send prompts from anywhere, get results on Telegram.
 
-## Why?
+Built by a solo founder who needed to fix production bugs from a construction site. Zero compromises.
 
-You're away from your desk but need to run a quick Claude Code task. SSH is clunky on mobile. ClaudeBridge lets you type naturally in Telegram and get results in seconds.
+## Features
+
+- **Two modes**: prefix with `!` for instant shell commands, plain text for Claude Code
+- **Interactive confirms**: dangerous commands forwarded to Telegram — approve or reject from iPhone
+- **Single user auth**: only your chat ID can control it
+- **Auto-restart**: pm2 keeps it alive after reboots
+- **Chunked output**: long responses split automatically (Telegram 4096 char limit)
 
 ## Prerequisites
 
-- **Node.js** 18+
-- **Claude Code** CLI installed and authenticated (`npm install -g @anthropic-ai/claude-code`)
-- **Telegram Bot** — create one via [@BotFather](https://t.me/BotFather)
-- Your **Telegram Chat ID** — send a message to [@userinfobot](https://t.me/userinfobot) to get it
+- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
+- A Telegram bot token (create via @BotFather)
+- Node.js 18+
+- pm2 (`npm install -g pm2`)
 
-## Installation (5 minutes)
+## Installation
 
+1. Clone the repo
 ```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/claudebridge.git
+git clone https://github.com/zoccolienrico-blip/claudebridge.git
 cd claudebridge
-
-# 2. Install dependencies
 npm install
+```
 
-# 3. Configure environment
+2. Create your .env
+```bash
 cp .env.example .env
-# Edit .env with your bot token and chat ID
-
-# 4. Start the bot
-npm start
-
-# 5. (Optional) Run with pm2 for persistence
-npm install -g pm2
-pm2 start index.js --name claudebridge
 ```
 
-## Configuration
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | Yes |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID (only this user can use the bot) | Yes |
-| `CLAUDE_WORK_DIR` | Working directory for Claude Code (default: `~`) | No |
-| `TASK_TIMEOUT` | Max seconds per task (default: `300`) | No |
-
-## Usage
-
-Open Telegram on your iPhone and message your bot:
-
-### Run prompts
-
+Edit .env:
 ```
-You: Leggi il file server.js e dimmi quante righe ha
-
-Bot: Running...
-Bot: Il file server.js ha 245 righe. Contiene l'entry point Express
-     con 6 cron job configurati...
+TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
+TELEGRAM_CHAT_ID=your_telegram_chat_id
+CLAUDE_WORK_DIR=~/your-project
+TASK_TIMEOUT=300
 ```
 
-### Multi-line prompts
+How to get your chat ID: message @userinfobot on Telegram.
 
-```
-You: Crea un endpoint GET /api/health che ritorna
-     { status: "ok", uptime: process.uptime() }
-     in src/routes/api.js
-
-Bot: Running...
-Bot: Ho aggiunto l'endpoint in api.js alla riga 15...
-```
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `/status` | Check if Claude Code is busy or idle |
-| `/stop` | Stop the currently running task |
-| `/help` | Show available commands |
-
-## How it works
-
-```
-iPhone Telegram -> Telegram API -> ClaudeBridge (Node.js)
-                                        |
-                                        v
-                               claude --dangerously-skip-permissions -p "prompt"
-                                        |
-                                        v
-                               Output sent back to Telegram
-```
-
-1. You send a message on Telegram
-2. ClaudeBridge receives it via polling
-3. Auth check: only your `CHAT_ID` is accepted
-4. Spawns `claude -p "your prompt"` as a child process
-5. Captures stdout and sends it back in chunks (max 4096 chars per message)
-6. Timeout after 5 minutes with automatic notification
-
-## Security
-
-- **Single-user**: Only the configured `TELEGRAM_CHAT_ID` can interact with the bot
-- **No secrets in code**: All config via `.env` (git-ignored)
-- **Local execution**: Claude Code runs on your machine, not a remote server
-- **`--dangerously-skip-permissions`**: Required for non-interactive mode. The bot runs with full Claude Code permissions on your machine — only you should have access
-
-## Running as a service
-
-### With pm2
-
+3. Start with pm2
 ```bash
 pm2 start index.js --name claudebridge
 pm2 save
-pm2 startup  # Auto-start on boot
 ```
 
-### With tmux (simpler)
-
+4. Auto-start on reboot (macOS)
 ```bash
-tmux new -s bridge
-npm start
-# Ctrl+B, D to detach
+pm2 startup launchd
+sudo [command it gives you]
+pm2 save
 ```
+
+## Usage
+
+### Shell commands — instant
+Prefix with ! to run directly in shell:
+```
+!git log --oneline -5
+!pm2 status
+!ls ~/myproject
+```
+
+### Claude Code prompts — AI powered
+Send any text without !:
+```
+Fix the bug in src/api.js where company filter is missing
+Add a new endpoint GET /api/vehicles with pagination
+What does server.js do?
+```
+
+### Interactive confirms
+When Claude Code asks for approval on dangerous commands,
+ClaudeBridge forwards the question to Telegram.
+Reply yes, no, or the exact text to proceed.
+
+## Real-world example
+
+```
+You (iPhone): Fix the 500 error on /api/refueling
+Bot: Working on it...
+Bot: Found the issue — missing try/catch on line 847.
+     Fixed and committed. Deploy in progress.
+
+You: !git log --oneline -3
+Bot: a1b2c3 fix: error handling /api/refueling
+     d4e5f6 feat: new dashboard widget
+     g7h8i9 chore: update dependencies
+```
+
+## Why not just use SSH?
+
+SSH works. But typing complex prompts on a phone keyboard into a terminal is painful. ClaudeBridge lets you describe what you need in plain language and Claude Code figures out the rest — while you are on a job site, in a meeting, or putting your kid to bed.
+
+## Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| TELEGRAM_BOT_TOKEN | From @BotFather | required |
+| TELEGRAM_CHAT_ID | Your personal chat ID | required |
+| CLAUDE_WORK_DIR | Project directory | ~/ |
+| TASK_TIMEOUT | Seconds before timeout | 300 |
+
+## Security
+
+- Single-user by design — only your TELEGRAM_CHAT_ID can send commands
+- All dangerous bash commands require explicit approval
+- Never expose this bot publicly or share your token
 
 ## License
 
-MIT
+MIT — fork it, improve it, share it.
 
 ---
 
-*Built for the [FuelEye](https://fueleye.io) development workflow.*
+Built for FuelEye — IoT fuel monitoring for construction, transport and agriculture.
+https://fueleye.io

@@ -1,0 +1,16 @@
+{
+  "name": "claudebridge",
+  "version": "1.0.0",
+  "description": "Telegram bot that bridges iPhone to Claude Code CLI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["telegram", "claude", "claude-code", "bridge", "cli"],
+  "author": "Enrico Zoccolini",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

@@ -2,7 +2,7 @@
 // Lets you control Claude Code from your iPhone via Telegram
 require('dotenv').config();
 var TelegramBot = require('node-telegram-bot-api');
-var { spawn } = require('child_process');
+var { spawn, execFile } = require('child_process');
 var path = require('path');
 
 // ─── Config ──────────────────────────────────────────────
@@ -19,7 +19,38 @@ if (!BOT_TOKEN || !CHAT_ID) {
 var ALLOWED_CHAT = String(CHAT_ID);
 
 // ─── State ───────────────────────────────────────────────
-var activeTask = null; // { process, startTime, prompt }
+var activeTask = null; // { process, startTime, prompt, waitingConfirmation, outputBuffer }
+
+// ─── Confirmation detection ─────────────────────────────
+var CONFIRM_PATTERNS = [
+  /Do you want to proceed\?/i,
+  /requires approval/i,
+  /Continue\?/i,
+  /\(Y\/n\)/i,
+  /\(yes\/no\)/i,
+  /\[Y\/n\]/i,
+  /\[yes\/no\]/i,
+  /Do you want to/i,
+  /Allow this/i,
+  /Approve\?/i,
+  /Allow once/i,
+  /Allow always/i,
+  /Press Enter to/i,
+  /\? \(y\)/i,
+  /\byes\b.*\bno\b.*\balways\b/i
+];
+
+function detectConfirmation(text) {
+  for (var i = 0; i < CONFIRM_PATTERNS.length; i++) {
+    if (CONFIRM_PATTERNS[i].test(text)) return true;
+  }
+  return false;
+}
+
+// Strip ANSI escape codes for clean detection
+function stripAnsi(str) {
+  return str.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1B\][^\x07]*\x07/g, '');
+}
 
 // ─── Bot Setup ───────────────────────────────────────────
 var bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -42,7 +73,9 @@ bot.onText(/\/help/, function(msg) {
     '`/status` — Check if Claude Code is busy or idle\n' +
     '`/stop` — Stop the current running task\n' +
     '`/help` — Show this help message\n\n' +
-    'Any other message is sent directly to Claude Code as a prompt.\n' +
+    '*Modalità:*\n' +
+    '`!comando` — esegue direttamente nella shell (es. `!git status`)\n' +
+    'Tutto il resto → prompt a Claude Code\n\n' +
     'Timeout: ' + TIMEOUT_SEC + 's per task.',
     { parse_mode: 'Markdown' }
   );
@@ -53,8 +86,9 @@ bot.onText(/\/status/, function(msg) {
   if (!isAuthorized(msg)) return reject(msg);
   if (activeTask) {
     var elapsed = Math.round((Date.now() - activeTask.startTime) / 1000);
+    var status = activeTask.waitingConfirmation ? 'WAITING CONFIRMATION' : 'BUSY';
     bot.sendMessage(msg.chat.id,
-      'BUSY (' + elapsed + 's elapsed)\n\nPrompt: ' + activeTask.prompt.substring(0, 200)
+      status + ' (' + elapsed + 's elapsed)\n\nPrompt: ' + activeTask.prompt.substring(0, 200)
     );
   } else {
     bot.sendMessage(msg.chat.id, 'IDLE — Ready for prompts.');
@@ -104,6 +138,15 @@ function sendChunked(chatId, text) {
   return chain;
 }
 
+// ─── Map user reply to stdin input ──────────────────────
+function mapReplyToInput(text) {
+  var lower = text.trim().toLowerCase();
+  if (lower === 'si' || lower === 'sì' || lower === 'yes' || lower === 'y') return 'y\n';
+  if (lower === 'no' || lower === 'n') return 'n\n';
+  // Send exact text as-is
+  return text.trim() + '\n';
+}
+
 // ─── Main message handler — run Claude Code ──────────────
 bot.on('message', function(msg) {
   if (!isAuthorized(msg)) return reject(msg);
@@ -122,60 +165,79 @@ bot.on('message', function(msg) {
     return;
   }
 
-  // Run Claude Code
+  // ─── MODE 1: Shell command (starts with !) ─────────────
+  if (text.startsWith('!')) {
+    var cmd = text.slice(1).trim();
+    if (!cmd) return;
+    bot.sendMessage(msg.chat.id, '🐚 Shell: ' + cmd);
+
+    var shellProc = spawn('/bin/zsh', ['-c', cmd], {
+      cwd: WORK_DIR,
+      env: Object.assign({}, process.env, { FORCE_COLOR: '0' }),
+      timeout: TIMEOUT_SEC * 1000
+    });
+
+    var shellOut = '';
+    var shellErr = '';
+
+    activeTask = { process: shellProc, startTime: Date.now(), prompt: cmd };
+
+    shellProc.stdout.on('data', function(d) { shellOut += d.toString(); });
+    shellProc.stderr.on('data', function(d) { shellErr += d.toString(); });
+
+    shellProc.on('close', function(code) {
+      activeTask = null;
+      var output = (shellOut + (shellErr ? '\nSTDERR:\n' + shellErr : '')).trim();
+      sendChunked(msg.chat.id, output || '(no output, exit code ' + code + ')');
+    });
+
+    shellProc.on('error', function(err) {
+      activeTask = null;
+      bot.sendMessage(msg.chat.id, 'Shell error: ' + err.message);
+    });
+
+    return;
+  }
+
+  // ─── MODE 2: Claude Code prompt ────────────────────────
   bot.sendMessage(msg.chat.id, 'Running...');
 
-  var stdout = '';
-  var stderr = '';
+  var proc = execFile('/opt/homebrew/bin/claude',
+    ['--dangerously-skip-permissions', '-p', text],
+    {
+      cwd: WORK_DIR,
+      env: Object.assign({}, process.env, { FORCE_COLOR: '0' }),
+      timeout: TIMEOUT_SEC * 1000,
+      maxBuffer: 10 * 1024 * 1024
+    },
+    function(err, stdout, stderr) {
+      activeTask = null;
 
-  var proc = spawn('claude', ['--dangerously-skip-permissions', '-p', text], {
-    cwd: WORK_DIR,
-    env: Object.assign({}, process.env, { FORCE_COLOR: '0' }),
-    shell: true,
-    timeout: TIMEOUT_SEC * 1000
-  });
+      if (err && err.killed) {
+        bot.sendMessage(msg.chat.id, 'Task timed out after ' + TIMEOUT_SEC + 's.');
+        return;
+      }
 
-  activeTask = {
-    process: proc,
-    startTime: Date.now(),
-    prompt: text
-  };
+      if (err && !stdout) {
+        bot.sendMessage(msg.chat.id, 'Error: ' + err.message + '\n\nIs Claude Code installed and in PATH?');
+        return;
+      }
 
-  proc.stdout.on('data', function(data) {
-    stdout += data.toString();
-  });
+      var output = stripAnsi((stdout || '').trim());
+      if (stderr && stderr.trim() && !output) {
+        output = 'STDERR:\n' + stripAnsi(stderr.trim());
+      }
 
-  proc.stderr.on('data', function(data) {
-    stderr += data.toString();
-  });
-
-  proc.on('close', function(code) {
-    activeTask = null;
-    var elapsed = Math.round((Date.now() - (activeTask ? activeTask.startTime : Date.now())) / 1000);
-
-    if (code === null) {
-      // Killed by timeout or /stop
-      bot.sendMessage(msg.chat.id, 'Task terminated (timeout or stopped).');
-      return;
+      sendChunked(msg.chat.id, output || '(no output, exit code ' + (err ? err.code : 0) + ')');
     }
+  );
 
-    var output = stdout.trim();
-    if (stderr.trim() && !output) {
-      output = 'STDERR:\n' + stderr.trim();
-    }
+  activeTask = { process: proc, startTime: Date.now(), prompt: text };
 
-    sendChunked(msg.chat.id, output || '(no output, exit code ' + code + ')');
-  });
-
-  proc.on('error', function(err) {
-    activeTask = null;
-    bot.sendMessage(msg.chat.id, 'Error: ' + err.message + '\n\nIs Claude Code installed and in PATH?');
-  });
-
-  // Timeout notification
+  // Warning before timeout
   setTimeout(function() {
     if (activeTask && activeTask.process === proc) {
-      bot.sendMessage(msg.chat.id, 'Task running for ' + TIMEOUT_SEC + 's — will timeout soon. Use /stop to cancel.');
+      bot.sendMessage(ALLOWED_CHAT, 'Task running for ' + (TIMEOUT_SEC - 30) + 's — will timeout soon. Use /stop to cancel.');
     }
   }, (TIMEOUT_SEC - 30) * 1000);
 });
